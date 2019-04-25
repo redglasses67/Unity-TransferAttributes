@@ -999,8 +999,8 @@ namespace TransferAttributes
             var bakedTex = TAP.BakeVtxColToTexture(
                             dstMeshData.dstMesh,
                             dstTriangleDataList,
-                            512,
-                            512,
+                            32,
+                            32,
                             TextureFormat.ARGB32,
                             false,
                             typeOfUseUV);
@@ -1649,6 +1649,7 @@ namespace TransferAttributes
                 if (isProgressCancel == true)
                 {
                     Debug.LogWarning("ApplyAttributesToMesh_1  :  キャンセルされました");
+                    EditorUtility.ClearProgressBar();
                     return;
                 }
 
@@ -2033,6 +2034,7 @@ namespace TransferAttributes
                 if (isProgressCancel == true)
                 {
                     Debug.LogWarning("ApplyTextureColorToVertexColor  :  キャンセルされました");
+                    EditorUtility.ClearProgressBar();
                     return;
                 }
             }

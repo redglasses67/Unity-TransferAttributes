@@ -1,8 +1,12 @@
 ﻿
 using UnityEditor;
 using UnityEngine;
+using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
+// using System.Threading.Tasks;
 
 namespace TransferAttributes
 {
@@ -83,6 +87,7 @@ namespace TransferAttributes
                     vtxPosIdxDict         = null;
                     vtxPosTriangleIdxDict = null;
                     triangleDataList      = null;
+                    EditorUtility.ClearProgressBar();
                     return;
                 }
 
@@ -279,6 +284,7 @@ namespace TransferAttributes
                 if (isProgressCancel == true)
                 {
                     Debug.LogWarning("GetIntersectedTriangleDataWithNormal  :  キャンセルされました");
+                    EditorUtility.ClearProgressBar();
                     return null;
                 }
 
@@ -1309,7 +1315,6 @@ t((a * ray.x) + (b * ray.y) + (c * ray.z)) = ((a * pos.x) + (b * pos.y) + (c * p
             var progressInfo     = "";
             var isProgressCancel = false;
             
-
             for (var x = 0; x < xVoxelCount; x++)
             {
                 var tmpBoundsMaxX = boundsMax.x - (voxelSpaceLength * x);
@@ -1481,11 +1486,21 @@ t((a * ray.x) + (b * ray.y) + (c * ray.z)) = ((a * pos.x) + (b * pos.y) + (c * p
             var progressInfo = "";
 
             // List<PixelData> pixelDataList;
-            var applidColorPixelList = new List<int>();
+            var appliedColorPixelIdxList = new List<int>();
 
             var uvList = new List<Vector2>();
             dstMesh.GetUVs((int)typeOfUseUV, uvList);
 
+            int avaliableWorkThread, avaliableCompletionPortThread;
+            // int ioMin, ioMax;
+            ThreadPool.GetAvailableThreads(out avaliableWorkThread, out avaliableCompletionPortThread);
+            Debug.Log("avaliableWorkThread = " + avaliableWorkThread +
+                "  :  avaliableCompletionPortThread = " + avaliableCompletionPortThread);
+
+            ThreadPool.SetMinThreads( 0, avaliableCompletionPortThread );
+            ThreadPool.SetMaxThreads( avaliableWorkThread, avaliableCompletionPortThread );
+
+            var isProgressCancel = false;
             foreach (var dstTriangleData in dstTriangleDataList)
             {
                 count++;
@@ -1494,10 +1509,16 @@ t((a * ray.x) + (b * ray.y) + (c * ray.z)) = ((a * pos.x) + (b * pos.y) + (c * p
                 progressInfo = "TriangleIdx = " + dstTriangleData.triangleIdx +
                                 " : " + count.ToString() + " / " + totalCount.ToString();
 
-                EditorUtility.DisplayProgressBar(
-                    "BakeVtxColToTexture",
-                    progressInfo,
-                    progress);
+                isProgressCancel = EditorUtility.DisplayCancelableProgressBar(
+                                    "BakeVtxColToTexture",
+                                    progressInfo,
+                                    progress);
+
+                if (isProgressCancel == true)
+                {
+                    Debug.Log("BakeVtxColToTexture がキャンセルされました");
+                    return null;
+                }
 
                 CalcUVForTexture(
                     dstMesh,
@@ -1508,10 +1529,11 @@ t((a * ray.x) + (b * ray.y) + (c * ray.z)) = ((a * pos.x) + (b * pos.y) + (c * p
                     uvList,
                     // ref pixelDataList);
                     ref vtxColorArray,
-                    ref applidColorPixelList,
+                    ref appliedColorPixelIdxList,
                     progressInfo);
 
                 // Debug.Log("pixelDataList = " + pixelDataList.Count);
+                //  Debug.Log("count = " + count);
                 // foreach (var pixelData in pixelDataList)
                 // {
                 //     Debug.Log("pixelData = " + pixelData.uvX + " , " + pixelData.uvY +
@@ -1520,6 +1542,7 @@ t((a * ray.x) + (b * ray.y) + (c * ray.z)) = ((a * pos.x) + (b * pos.y) + (c * p
                     
                 // }
             }
+            Debug.Log("終わった？？");
             vtxColTex.SetPixels(vtxColorArray);
 
             EditorUtility.ClearProgressBar();
@@ -1539,7 +1562,7 @@ t((a * ray.x) + (b * ray.y) + (c * ray.z)) = ((a * pos.x) + (b * pos.y) + (c * p
             List<Vector2> uvList,
             // ref List<PixelData> pixelDataList)
             ref Color[] vtxColArray,
-            ref List<int> applidColorPixelList,
+            ref List<int> appliedColorPixelIdxList,
             string progressInfo)
         {
             var idx1 = dstTriangleData.vtxIdx1;
@@ -1570,6 +1593,141 @@ t((a * ray.x) + (b * ray.y) + (c * ray.z)) = ((a * pos.x) + (b * pos.y) + (c * p
 
             // UVと同じくテクスチャのチェックしている位置を0～1で表す変数
             Vector2 checkerPoint;
+
+            // refのままだとParallelFor内で参照できないので値渡しでコピ－したリストを作る
+            // var oldAppliedColorPixelIdxList = new List<int>(appliedColorPixelIdxList);
+
+            // var newAppliedColorPixelIdxList = new List<int>();
+            var oldAppliedColorPixelIdxList = ArrayList.Synchronized(new ArrayList(appliedColorPixelIdxList));
+
+            var newAppliedColorPixelIdxList = ArrayList.Synchronized(new ArrayList());
+
+            var vtxColDict = new Dictionary<int, Color>();
+
+            // var options = new ParallelOptions();
+            // options.MaxDegreeOfParallelism = 2;
+
+            // Parallel.For (0, texHeight, options, y =>
+
+            try
+            {
+            ParallelFor (0, texHeight, y =>
+            {
+                checkerPoint.y = (float)y / texHeight;
+
+                // Debug.Log("idx1 = " + idx1 +
+                //     " : idx2 = " + idx2 +
+                //     " : idx3 = " + idx3);
+                    // Debug.Log("checkerPoint.y = " + checkerPoint.y +
+                    //     " : uvMinY = " + uvMinY +
+                    //     " : uvMaxY = " + uvMaxY);
+                // Yの最大よりも大きかったり、最小よりも小さい場合はパス
+                // if (uvMaxY < checkerPoint.y || checkerPoint.y < uvMinY) //{ continue; }
+                // {
+                //     count++;
+                //     return; // ParallelForではcontinueが使えないのでreturn
+                // }
+                if (uvMinY <= checkerPoint.y && checkerPoint.y <= uvMaxY) //{ continue; }
+                {
+                    for (int x = 0; x < texWidth; x++)
+                    {
+                        // 原画像の座標系に変換
+                        // var srcX = unitX * x + correctionX;
+                        // var srcY = unitY * y + correctionY;
+
+                        // bitmap[x, y] = get((int)srcX, (int)srcY);
+
+                        // count++;
+
+                        // progress     = (float)count / totalCount;
+                        // progressInfo2 = progressInfo + " : x = " + x + " : y = " + y +
+                        //                 " : " + count.ToString() + " / " + totalCount.ToString();
+
+                        // isProgressCancel = EditorUtility.DisplayCancelableProgressBar(
+                        //                     "Calculate UV For Texture",
+                        //                     progressInfo2,
+                        //                     progress);
+
+                        // // キャンセルされたら強制return
+                        // if (isProgressCancel == true)
+                        // {
+                        //     Debug.LogWarning("CalcUVForTexture  :  キャンセルされました");
+                        //     EditorUtility.ClearProgressBar();
+                        //     return;
+                        // }
+
+                        checkerPoint.x = (float)x / texWidth;
+                        
+                        // Xの最大よりも大きかったり、最小よりも小さい場合はパス
+                        // if (uvMaxX < checkerPoint.x || checkerPoint.x < uvMinX) { continue; }
+                        if (uvMinX <= checkerPoint.x && checkerPoint.x <= uvMaxX)
+                        {
+                            // Debug.Log("最終通過 -- checkerPoint.x = " + checkerPoint.x +
+                            //     " : uvMinX = " + uvMinX +
+                            //     " : uvMaxX = " + uvMaxX);
+
+                            // ここでUVによる三角形の各エッジと走査中の点（ピクセル）との内積を計算
+                            if (HasPointOnTriangle2D(uv1, uv2, uv3, checkerPoint) == true)
+                            {
+                                // var tmpPixelData      = new PixelData();
+                                // tmpPixelData.uvX      = (int)(checkerPoint.x * texWidth);
+                                // tmpPixelData.uvY      = (int)(checkerPoint.y * texHeight);
+                                
+                                // Debug.Log("col1 = " + col1.r + ", " + col1.g + ", " + col1.b + ", " + col1.a +
+                                //     "  :  col2 = " + col2.r + ", " + col2.g + ", " + col2.b + ", " + col2.a +
+                                //     "  :  col3 = " + col3.r + ", " + col3.g + ", " + col3.b + ", " + col3.a );
+                                // tmpPixelData.blendCol = GetBlendedColor(uv1, uv2, uv3, checkerPoint, col1, col2, col3);
+                                // pixelDataList.Add(tmpPixelData);
+                                var pixelIdx = x + texWidth * y;
+                                
+                                if (oldAppliedColorPixelIdxList.Contains((int)pixelIdx) == false
+                                &&  vtxColDict.ContainsKey(pixelIdx) == false)
+                                {
+                                    var blendCol = GetBlendedColor(uv1, uv2, uv3, checkerPoint, col1, col2, col3);
+                                    // vtxColArray.SetValue(blendCol, pixelIdx);
+                                    // vtxColDict[pixelIdx] = blendCol;
+                                    vtxColDict.Add(pixelIdx, blendCol);
+
+                                    Debug.Log("pixelIdx = " + pixelIdx +
+                                        "  :  blendCol = " + blendCol.r + ", " + blendCol.g + ", " + blendCol.b + ", " + blendCol.a);
+
+                                    try
+                                    {
+                                        newAppliedColorPixelIdxList.Add(pixelIdx);
+                                    }
+                                    catch
+                                    {
+                                        Debug.LogError("newAppliedColorPixelIdxList Error : " + pixelIdx);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+            }
+            catch
+            {
+                Debug.LogError("エラーになりました・・・");
+                return;
+            }
+
+            foreach (var vtxColKeyPair in vtxColDict)
+            {
+                vtxColArray.SetValue(vtxColKeyPair.Value, vtxColKeyPair.Key);
+            }
+
+            if (newAppliedColorPixelIdxList != null)
+            {
+                foreach (var newAppliedColorPixelIdx in newAppliedColorPixelIdxList)
+                {
+                    if (appliedColorPixelIdxList.Contains((int)newAppliedColorPixelIdx) == false)
+                    {
+                        appliedColorPixelIdxList.Add((int)newAppliedColorPixelIdx);
+                    }
+                }
+            }
+            /*
             for (var y = 0; y < texHeight; y++)
             {
                 checkerPoint.y = (float)y / texHeight;
@@ -1599,6 +1757,7 @@ t((a * ray.x) + (b * ray.y) + (c * ray.z)) = ((a * pos.x) + (b * pos.y) + (c * p
                     if (isProgressCancel == true)
                     {
                         Debug.LogWarning("CalcUVForTexture  :  キャンセルされました");
+                        EditorUtility.ClearProgressBar();
                         return;
                     }
 
@@ -1622,7 +1781,7 @@ t((a * ray.x) + (b * ray.y) + (c * ray.z)) = ((a * pos.x) + (b * pos.y) + (c * p
                         // pixelDataList.Add(tmpPixelData);
                         var pixelIdx = x + texWidth * y;
                         
-                        if (applidColorPixelList.Contains(pixelIdx) == false)
+                        if (appliedColorPixelIdxList.Contains(pixelIdx) == false)
                         {
                             var blendCol = GetBlendedColor(uv1, uv2, uv3, checkerPoint, col1, col2, col3);
                             vtxColArray.SetValue(blendCol, pixelIdx);
@@ -1630,13 +1789,14 @@ t((a * ray.x) + (b * ray.y) + (c * ray.z)) = ((a * pos.x) + (b * pos.y) + (c * p
                             Debug.Log("pixelIdx = " + pixelIdx +
                                 "  :  blendCol = " + blendCol.r + ", " + blendCol.g + ", " + blendCol.b + ", " + blendCol.a);
 
-                            applidColorPixelList.Add(pixelIdx);
+                            appliedColorPixelIdxList.Add(pixelIdx);
                         }
                         
                     }
                 }
             }
-            EditorUtility.ClearProgressBar();
+            */
+            // EditorUtility.ClearProgressBar();
 
         }
 
@@ -1769,6 +1929,96 @@ W2 = ( (Ax * By * 1) + (1 * Bx * Py) + (Ay * 1 * Px) - (1 * By * Px) - (Ay * Bx 
             blendCol = (col1 * weight1) + (col2 * weight2) + (col3 * weight3);
 
             return blendCol;
+        }
+
+
+/*
+参考サイト
+画像のリサイズを実装する（ニアレストネイバー編） | 株式会社ヘキサドライブ | HEXADRIVE | ゲーム制作を中心としたコンテンツクリエイト会社
+https://hexadrive.jp/hexablog/program/25599/
+*/
+        private static readonly List<ManualResetEvent> _handlePool = new List<ManualResetEvent>();
+
+        private static void ParallelFor (int start, int end, Action<int> action)
+        {
+            var length = Math.Abs(end - start);
+            if (length == 0) { return; }
+
+            // start <= endを保証する
+            if (start > end)
+            {
+                var tmp = start;
+                start = end;
+                end = tmp;
+            }
+
+            ExtendHandlePoolCapacity(length);
+
+            // 並列タスクの生成と同期オブジェクトの取得
+            var index = 0;
+            var handles = new ManualResetEvent[length];
+
+            for (var i = start; i < end; i++)
+            {
+                var arg = i;
+                var handle = PopHandle();
+                // Debug.Log("i = " + i);
+                ThreadPool.QueueUserWorkItem(state =>
+                {
+                    action(arg);
+                    handle.Set();
+                    // Thread.Sleep(1000);
+                    
+                });
+
+                handles[index++] = handle;
+            }
+
+            // 並列タスクの終了待ち
+            foreach (var _handle in handles)
+            {
+                // _handle.WaitOne(20000);
+                var wait = _handle.WaitOne(2000);
+                // var wait = _handle.WaitOne();
+                if (wait == false) // sleep 1000ms
+                {
+                    throw new OperationCanceledException();
+                }
+                // else
+                // {
+                //     Debug.LogWarning("ちゃんと待てた？");
+                // }
+                // Thread.Sleep(2000);
+                // await Task.Delay(1000);
+                PushHandle(_handle);
+            }
+        }
+
+        private static void ExtendHandlePoolCapacity (int capacity)
+        {
+            if (_handlePool.Capacity < capacity) 
+            {
+                _handlePool.Capacity = capacity;
+            }
+        }
+
+        private static void PushHandle (ManualResetEvent handle)
+        {
+            _handlePool.Add(handle);
+        }
+
+        private static ManualResetEvent PopHandle ()
+        {
+            if (_handlePool.Count <= 0)
+            {
+                return new ManualResetEvent(false);
+            }
+
+            var lastIndex = _handlePool.Count - 1;
+            var handle    = _handlePool[lastIndex];
+            _handlePool.RemoveAt(lastIndex);
+            handle.Reset();
+            return handle;
         }
     }
 }
